@@ -1,0 +1,21 @@
+Script to check the CPU and memory usage
+
+#get all process
+$processes = get-process | selet-object ProcessName
+#get the name of the process
+foreach( $pro in $processes)
+{
+$processDetails = get-process -Name $pro | Where-Object { $_.CPU -ne $null}
+foreach ($p in $processDetails) { 
+Write-host "ProcessID" -ForegroundColor Yellow 
+   $p.Id
+
+   Write-host "CPU consumed" -ForegroundColor Yellow 
+
+   $p.CPU
+
+   Write-host "Memory used" -ForegroundColor Yellow 
+   $p.VM
+   Write-host "==================================" -ForegroundColor Yellow 
+}
+}
