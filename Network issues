@@ -1,0 +1,37 @@
+Troubleshoot network issues:
+
+#Check network status
+Get-NetAdapter | ft name, status
+
+#ping the server
+ping #ipaddress
+Test-Connection "IPADDRESS" informationLevel Detailed
+
+#Trace the route of connecting to server
+Test-Connection "IPADDRESS" -traceroute
+$ipaddresses = Test-NetConnection -ComputerName "Name of your computer" -traceRoute -Hops 3 | select-object TraceRoute
+
+#get the IP address or computer names from the above command and then use the below to check for any open ports.
+
+#get all estlablished ports and open ports
+$ports = Get-NetTCPConnection –State Established | select-object remoteport
+foreach($p in $ports)
+{
+foreach ($ip in $ipaddresse)
+{
+if (Test-NetConnection  $ip  -Port $p -InformationLevel Quiet -WarningAction SilentlyContinue)
+{
+Write-host "Memory used" -ForegroundColor Green  "Port $p: open" }
+else
+{
+Write-host "Memory used" -ForegroundColor Yellow "Port $p: closed"} }
+
+}
+}
+Write-Host "Port check complete"
+Write-Host "=============================================="
+
+Test of http port is open
+Test-NetConnection "IP address/computer name" -CommonTCPPort "Http"
+
+
