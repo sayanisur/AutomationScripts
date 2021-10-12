@@ -1,0 +1,530 @@
+# c# code to automate the process of:
+a--> downloading files from blob
+b--> copying files in local folder
+c--> create new files and automate config file generation
+d--> upload the files in blob
+
+#In this example , we assume that we have an excel in azure blob storage with the data which contains IIS site details. We would be reading the data, generating the config files,
+and uploading in blob storage. 
+# In order to start with the process, we store a dummy Monitoring.exe.config(for eg:) in our local storage(eg: c drive). We would be generating further configs from this. 
+
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Configuration;
+using System.Xml;
+using System.Data;
+using System.Text.RegularExpressions;
+using System.Data.SqlClient;
+using Microsoft.WindowsAzure.Storage;
+using Microsoft.WindowsAzure.Storage.Blob;
+using Azure;
+using Azure.Storage;
+//using Azure.Storage.Blobs;
+using Azure.Storage.Files.Shares;
+using Azure.Storage.Files.Shares.Models;
+using Azure.Storage.Sas;
+using Microsoft.WindowsAzure.Storage.File;
+using System.IO.Compression;
+using System.Threading;
+using CsvHelper;
+using System.Globalization;
+
+namespace copyfileautomation
+{
+    public class CustomerCname
+    {
+        public string customers { get; set; }
+        public string cname { get; set; }
+    }
+    class Program
+    {
+        
+        public static Dictionary<string, string> customeCnameInfo = new Dictionary<string, string>();
+        public static string batchfilename = string.Empty;
+        static void Main(string[] args)
+        {
+
+            try
+            {
+              
+                string fileName = "Monitoring.exe.config";                
+                Console.WriteLine("Getting config values");
+                Tuple<string, string,string> basefolderpaths;
+
+                #region create base folders
+                basefolderpaths = createBaseFolders();
+                #endregion
+
+                #region download files from azure
+                //get blob storage key
+                string blobKey = string.IsNullOrWhiteSpace(ConfigurationManager.AppSettings["BlobStorageKey"]) ? null : ConfigurationManager.AppSettings["BlobStorageKey"];
+                CloudStorageAccount account = CloudStorageAccount.Parse(blobKey);
+                CloudFileClient client = account.CreateCloudFileClient();
+                CloudFileShare cloudFileShare = client.GetShareReference("fileshareconfig");
+                //get the related directory
+                CloudFileDirectory root = cloudFileShare.GetRootDirectoryReference();
+                CloudFileDirectory batchfilesdir = root.GetDirectoryReference("batchfiles");
+                CloudFileDirectory configfilesdir = root.GetDirectoryReference("configfiles");
+
+                //download files from blob storage
+                Console.WriteLine("Downloading files from blob storage and extracting...");
+                Console.WriteLine("Do you want partial upload of files?(Y/N)");
+                string ans = Console.ReadLine();
+                if (ans.ToUpper().Equals("Y")) 
+                {
+                    do
+                    {
+                        Console.WriteLine("Enter the name of the customer you want to generate config");
+                        string customername = Console.ReadLine();
+                        DownloadCloudFilesPartially(batchfilesdir, basefolderpaths.Item1, customername);
+                        Console.WriteLine("Do you want to continue(Y/N)");
+                        ans = Console.ReadLine();
+                    } while (ans.ToUpper().Equals("Y"));
+                }
+                else
+                {
+                    Console.WriteLine("Downloading entire batch files");
+                    DownloadCloudFiles(batchfilesdir, basefolderpaths.Item1);
+                    Console.WriteLine("Download completed");
+                }
+
+                string docPath = basefolderpaths.Item1 + @"\" + batchfilename;
+                string configfile = basefolderpaths.Item2;
+                string configfilepath = basefolderpaths.Item1 + @"\" + fileName;
+                string basepath = basefolderpaths.Item3;
+                
+                #endregion
+
+                #region config file genration
+                //Console.WriteLine("Get cname details from DB");
+                //getRecordsFromCsvCnames();
+                //getCnamedetails();
+
+                Console.WriteLine("Create directories for all customers");
+                string docPath = @"C:\Monitoring\batchfiles2";
+                string configfile = @"C:\Monitoring\ConfigFiles";
+                string configfilepath = @"C:\Monitoring\batchfiles2\Monitoring.exe.config";
+                string basepath = "";
+                createDirectories(docPath, configfile, fileName, configfilepath, basepath);
+                #endregion
+
+                #region upload files to Azure storage
+                Console.WriteLine("Uploading files to Azure storage");
+                //string path = basepath + @"\configfiles.zip";
+                UploadFilesRecursive(configfile, configfilesdir);
+                #endregion
+
+                #region delete all folders and files used for config file generation
+                Thread.Sleep(50000);
+                Directory.Delete(basepath, true);
+                            
+                Console.WriteLine("Path deleted");
+                #endregion
+
+                Console.ReadLine();
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("Error in generating config file: "+ex.Message);
+                Console.ResetColor();
+                Console.ReadLine();
+
+            }
+
+        }
+        public static void InsertCnamestoDB()
+        {
+
+        }
+        public static Tuple<string,string,string> createBaseFolders()
+        {
+            //create a folder in c drive Monitoring
+            string pathMonitoring = @"C:\Monitoring";
+            string batchfilepath = pathMonitoring + @"\batchfiles";
+            string configpath = pathMonitoring + @"\configfiles";
+            if (!System.IO.Directory.Exists(pathMonitoring))
+            {
+                Console.WriteLine("Creating directory: Monitoring");
+                System.IO.Directory.CreateDirectory(pathMonitoring);
+
+
+            }
+            if (!System.IO.Directory.Exists(batchfilepath))
+            {
+                System.IO.Directory.CreateDirectory(batchfilepath);
+            }
+            if (!System.IO.Directory.Exists(configpath))
+            {
+                System.IO.Directory.CreateDirectory(configpath);
+            }
+
+            return new Tuple<string, string,string>(batchfilepath, configpath, pathMonitoring);
+        }
+        public static void UploadFilesRecursive(string sDir, CloudFileDirectory configfilesdir)
+        {
+            try
+            {
+                CloudFileDirectory dir2;
+                foreach (var d in Directory.GetDirectories(sDir))
+                {
+                    string newdata = d.Substring(d.LastIndexOf("\\") + 1);
+                    dir2 = configfilesdir.GetDirectoryReference(newdata);
+                    dir2.CreateIfNotExists();
+                    UploadFilesRecursive(d,dir2);
+                }
+                DirectoryInfo curtomerdir = new DirectoryInfo(sDir);
+                var customerfiles = curtomerdir.GetFiles();
+
+
+                foreach (System.IO.FileInfo f1 in customerfiles)
+                {
+                    CloudFile cloudFile = configfilesdir.GetFileReference(f1.Name);
+                    //cloudFile.UploadFromFile(f1.DirectoryName);
+                    string path = f1.DirectoryName + @"\" + f1.Name;
+                    using (FileStream stream = File.OpenRead(path))
+                    {
+                        //cloudFile.Create(stream.Length);
+                        ////cloudFile.UploadRange(
+                        //    new HttpRange(0, stream.Length),
+                        //    stream);
+                        cloudFile.UploadFromStream(stream);
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("Error in uploading config file: " + ex.Message);
+                Console.ResetColor();
+                Console.ReadLine();
+            }
+        }
+
+        public static void UploadFilesinBlob(string basepath, CloudFileDirectory configfilesdir)
+        {
+            try
+            {
+                CloudFile cloudFile = configfilesdir.GetFileReference("configfiles.zip");
+                //cloudFile.UploadFromFile(f1.DirectoryName);
+                string path = basepath + @"\configfiles.zip";
+                using (FileStream stream = File.OpenRead(path))
+                {
+                    cloudFile.UploadFromStream(stream);
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+            }
+        }
+
+        public static void DownloadCloudFilesPartially(CloudFileDirectory rootdir, string filepath, string customerName)
+        {
+            Console.WriteLine("Downloading files partially");
+            string dirData= rootdir + @"/batchfiles/";
+            CloudFileDirectory dir = rootdir.GetDirectoryReference(customerName);
+            string dirPath = Path.Combine(filepath, customerName);
+            if (dir.Exists())
+            {
+                if (!Directory.Exists(dirPath))
+                {
+                    Directory.CreateDirectory(dirPath);
+                }
+
+                CloudFile fileconfig = rootdir.GetFileReference("Monitoring.exe.config");
+                string configPath = Path.Combine(filepath, "Monitoring.exe.config");
+                if (!File.Exists(configPath))
+                {
+                    //download file to local disk
+                    fileconfig.DownloadToFile(Path.Combine(filepath, "Monitoring.exe.config"), FileMode.Create);
+                }
+
+                foreach (var fileitem in dir.ListFilesAndDirectories())
+                {
+                    if (fileitem is CloudFile file)
+                    {
+
+                        file.DownloadToFile(Path.Combine(dirPath, file.Name), FileMode.Create);
+                        string fullPath = Path.Combine(dirPath, file.Name);
+                        string ext = fullPath.Substring(fullPath.LastIndexOf(".") + 1);
+
+                    }
+                }
+            }
+            else
+            {
+                Console.WriteLine("Directory does not exist. Please enter the name correctly");
+            }
+            Console.WriteLine("Download completed");
+        }
+        public static void DownloadCloudFiles(CloudFileDirectory rootdir,string filepath)
+        {
+
+            foreach (var fileitem in rootdir.ListFilesAndDirectories())
+            {
+                if (fileitem is CloudFile file)
+                {
+
+                    file.DownloadToFile(Path.Combine(filepath, file.Name), FileMode.Create);
+                    string fullPath = Path.Combine(filepath, file.Name);
+                    string ext = fullPath.Substring(fullPath.LastIndexOf(".") + 1);
+                    //if(ext.Equals("zip") || ext.Equals("7z"))
+                    //{
+                    //    ZipFile.ExtractToDirectory(fullPath, filepath);
+                    //    int index1= fullPath.LastIndexOf(@"\") ;
+                    //    int index2 =fullPath.LastIndexOf(".");
+                    //    int len = index2 - index1;
+                    //    batchfilename = fullPath.Substring(index1+1,len-1);
+                    //}
+                }
+                else if (fileitem is CloudFileDirectory dir)
+                {
+                    var folderpath = (Path.Combine(filepath, dir.Name));
+                    if (!Directory.Exists(folderpath))
+                    {
+                        Directory.CreateDirectory(folderpath);
+                    }
+                    DownloadCloudFiles(dir, folderpath);
+                }
+
+            }
+
+        }
+
+        public static void getRecordsFromCsvCnames()
+        {
+            using (var streamReader = File.OpenText("C:\\Customers\\customercnameInfo.csv"))
+            using (var csvReader = new CsvReader(streamReader, CultureInfo.CurrentCulture))
+            {
+                
+                var records = csvReader.GetRecords<CustomerCname>();
+                int totalPrice = 0;
+                foreach (var data in records)
+                {
+                    customeCnameInfo.Add(data.customers, data.cname);
+                }
+
+
+            }
+        }
+        public static void getCnamedetails()
+        {
+            SqlConnection conn = null;
+            try
+            {
+               
+                string DBConnStringMonitorTool = System.Configuration.ConfigurationManager.AppSettings["DBConnectionStringMonitorTool"];
+                using ( conn = new SqlConnection(DBConnStringMonitorTool))
+                {
+                    conn.Open();
+                    using (SqlCommand cmd = new SqlCommand("getCustomerCnameInfo", conn))
+                    {
+                        using (SqlDataReader reader = cmd.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                customeCnameInfo.Add(reader.GetString(0), reader.GetString(1));
+                            }
+                        }
+
+                    }
+                }
+            }
+            catch (Exception ex)
+            {    
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("Error in DB insert {0} and {1}", ex.Message, ex.ToString());
+                Console.ResetColor();                
+            }
+            finally
+            {
+                if (conn.State == System.Data.ConnectionState.Open)
+                {
+                    conn.Close();
+                }
+            }
+        }
+        public static void createDirectories(string docPath,string configfile, string fileName,string configfilepath,string basepath)
+        {
+            //string archiveName = basepath + @"\configfiles.zip";
+            var dirs = from dir in
+             Directory.EnumerateDirectories(docPath)
+                               select dir;
+
+            //create respective directories
+            foreach (var dir in dirs)
+            {
+                DirectoryInfo curtomerdir = new DirectoryInfo(dir);
+                var customerfiles = curtomerdir.GetFiles();
+                string dirname = dir.Substring(dir.LastIndexOf("\\") + 1);
+                string pathString = System.IO.Path.Combine(configfile, dirname);
+
+                
+                if (!System.IO.Directory.Exists(pathString))
+                {
+                    Console.WriteLine("Creating directory: " + pathString);
+                    System.IO.Directory.CreateDirectory(pathString.ToLower());
+                }
+
+                //create Task config file 
+                string foldernametask = "Task";
+                string pathStringTask = System.IO.Path.Combine(pathString, foldernametask).ToLower();
+               
+                if (!System.IO.Directory.Exists(pathStringTask))
+                {
+                    Console.WriteLine("Creating directory: " + pathStringTask);
+                    System.IO.Directory.CreateDirectory(pathStringTask);
+                    string destConfigFilepath = System.IO.Path.Combine(pathStringTask, fileName);
+                    System.IO.File.Copy(configfilepath, destConfigFilepath);
+                   // updateConfigFile(dirname, destConfigFilepath);
+                }
+                else
+                {
+                    Console.WriteLine("Directory exists: " + pathStringTask);
+                }
+
+                //create and place config files
+                Console.WriteLine("Reading the excel for values to be updated in config files");
+                foreach (System.IO.FileInfo f1 in customerfiles)
+                    {
+                        var listSites = new List<string>();
+                        var listAppPools = new List<string>();
+                        string path = f1.DirectoryName;
+                        string ext = f1.Name;
+                        int index= ext.IndexOf('-');
+                        string serverName = ext.Substring(0, index);
+
+                        //create folders and config files
+                        string destConfigFile = string.Empty;
+                        string destinationFolder = System.IO.Path.Combine(pathString, serverName).ToLower();
+                        destConfigFile = System.IO.Path.Combine(destinationFolder, fileName);
+                       
+
+                        //delete the generated task folder and create a new config file
+                            if (ext.Contains("wrk") || ext.Contains("task"))
+                            {
+                                Console.WriteLine("Deleting Task folder created before since worker IIS exists:");
+                                Directory.Delete(pathStringTask,true);
+                            }
+
+                            if (!System.IO.Directory.Exists(destinationFolder))
+                            {
+                                Console.WriteLine("Creating worker task folder: "+destinationFolder);
+                                System.IO.Directory.CreateDirectory(destinationFolder);
+                                System.IO.File.Copy(configfilepath, destConfigFile);
+                                Console.WriteLine("Created folder: " + destConfigFile);
+                                //read and update config files
+
+                                Console.WriteLine("Updating config file.....");
+                                updateConfigFile(path, ext, destConfigFile, listSites, listAppPools,dirname, serverName);
+                            }
+                            else
+                            {
+                                updateConfigFile(path, ext, destConfigFile, listSites, listAppPools, dirname, serverName);
+                                Console.WriteLine("Directory exists: " + destinationFolder);
+                            }
+
+                    }
+                
+            }
+
+
+          //  ZipFile.CreateFromDirectory(configfile, archiveName,
+          //CompressionLevel.Optimal, false);
+
+        }
+        public static void updateConfigFile(string dirname, string destConfigFile)
+            {
+                ExeConfigurationFileMap fileMap;
+                fileMap = new ExeConfigurationFileMap { ExeConfigFilename = destConfigFile };
+
+
+                var configuration = ConfigurationManager.OpenMappedExeConfiguration(fileMap, ConfigurationUserLevel.None);
+                if (customeCnameInfo.ContainsKey(dirname))
+                {
+                    configuration.AppSettings.Settings["InstanceCName"].Value = customeCnameInfo[dirname];
+                    configuration.Save(ConfigurationSaveMode.Modified);
+                    ConfigurationManager.RefreshSection("appSettings");
+                    Console.WriteLine("Updated cname: " + customeCnameInfo[dirname]);
+                }
+
+            }
+
+        public static void updateConfigFile(string path, string ext, string destConfigFile, List<string> listSites, List<string> listAppPools, string dirname, string serverName)
+        {
+            var csvTable = new DataTable();
+            var reader = new StreamReader(File.OpenRead(path + "\\" + ext));
+            while (!reader.EndOfStream)
+            {
+                var line = reader.ReadLine();
+                var values = line.Split(',');
+                Regex reg = new Regex("[*'\",_&#^@]");
+                string sites = reg.Replace(values[1], string.Empty);
+                string appPools = reg.Replace(values[2], string.Empty);
+
+                if (!sites.Equals("Site") && !sites.Equals("Healthcheck"))
+                {
+                    listSites.Add(sites);
+                }
+                if (!appPools.Equals("ApplicationPool") && !appPools.Equals("Healthcheck"))
+                {
+                    listAppPools.Add(appPools);
+                }
+
+
+            }
+
+            //add websites and appPools to DB
+
+            ExeConfigurationFileMap fileMap;
+            fileMap = new ExeConfigurationFileMap { ExeConfigFilename = destConfigFile };
+
+
+            var configuration = ConfigurationManager.OpenMappedExeConfiguration(fileMap, ConfigurationUserLevel.None);
+            var ss = configuration.AppSettings.Settings["IISSites"];
+            var value = ss.Value;
+            if (listSites.Count() > 0)
+            {
+                configuration.AppSettings.Settings["IISCheckRequired"].Value = "Yes";
+            }
+            if (listSites.Count() > 0)
+            {
+                //insert to SQL
+                string websites = string.Join(",", listSites.ToArray());
+                configuration.AppSettings.Settings["IISSites"].Value = websites;
+                Console.WriteLine("Updated websites: " + websites);
+
+                configuration.Save(ConfigurationSaveMode.Modified);
+                ConfigurationManager.RefreshSection("appSettings");
+            }
+            if (listAppPools.Count() > 0)
+            {
+                //insert to SQL
+                string appPools = string.Join(",", listAppPools.ToArray());
+                configuration.AppSettings.Settings["IISAppPools"].Value = appPools;
+                Console.WriteLine("Updated appPool: " + appPools);
+
+                configuration.Save(ConfigurationSaveMode.Modified);
+                ConfigurationManager.RefreshSection("appSettings");
+            }
+            //add cname
+            //if (customeCnameInfo.ContainsKey(dirname))
+            //{
+            //    configuration.AppSettings.Settings["InstanceCName"].Value = customeCnameInfo[dirname];
+            //    configuration.Save(ConfigurationSaveMode.Modified);
+            //    ConfigurationManager.RefreshSection("appSettings");
+            //    Console.WriteLine("Updated cname: " + customeCnameInfo[dirname]);
+            //}
+
+            Console.WriteLine("Updated all config values...");
+            Console.WriteLine("==============================================");
+
+        }
+    }
+}
